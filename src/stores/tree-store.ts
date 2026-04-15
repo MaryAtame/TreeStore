@@ -1,52 +1,110 @@
-import type {TreeItem, Id} from '@/types';
+import type {Id, TreeItem} from '@/types';
 
 export class TreeStore {
   private items: TreeItem[];
   private itemsMap: Map<Id, TreeItem>;
   private childrenMap: Map<Id, TreeItem[]>;
   private parentMap: Map<Id, Id | null>;
+  private indexMap: Map<Id, number>;
 
   constructor(items: TreeItem[]) {
-    this.items = [...items];
+    this.items = items.map((item) => ({...item}));
     this.itemsMap = new Map();
     this.childrenMap = new Map();
     this.parentMap = new Map();
+    this.indexMap = new Map();
 
     this.buildMaps();
   }
 
+  private static cloneItem(item: TreeItem): TreeItem {
+    return {...item};
+  }
+
+  private static cloneItems(items: TreeItem[]): TreeItem[] {
+    return items.map((item) => TreeStore.cloneItem(item));
+  }
+
+  private ensureUniqueId(id: Id): void {
+    if (this.itemsMap.has(id)) {
+      throw new Error(`Айтем с id="${String(id)}" уже существует`);
+    }
+  }
+
   private buildMaps(): void {
-    // очищаем существующие мапы
     this.itemsMap.clear();
     this.childrenMap.clear();
     this.parentMap.clear();
+    this.indexMap.clear();
 
-    // мапинг для всех элементов
-    for (const item of this.items) {
+    for (const [index, item] of this.items.entries()) {
+      if (this.itemsMap.has(item.id)) {
+        throw new Error(`Дублирование id="${String(item.id)}" в конструкторе класса TreeStore`);
+      }
+
       this.itemsMap.set(item.id, item);
       this.parentMap.set(item.id, item.parent);
+      this.indexMap.set(item.id, index);
     }
 
-    // организация связи родитель-ребенок
     for (const item of this.items) {
-      if (item.parent !== null) {
-        const children = this.childrenMap.get(item.parent) || [];
-        children.push(item);
-        this.childrenMap.set(item.parent, children);
+      if (item.parent === null) continue;
+
+      const children = this.childrenMap.get(item.parent) ?? [];
+      children.push(item);
+      this.childrenMap.set(item.parent, children);
+    }
+  }
+
+  private removeFromItemsById(id: Id): void {
+    const removeIndex = this.indexMap.get(id);
+    if (removeIndex === undefined) return;
+
+    const lastIndex = this.items.length - 1;
+    const lastItem = this.items[lastIndex];
+    if (!lastItem) return;
+
+    if (removeIndex !== lastIndex) {
+      this.items[removeIndex] = lastItem;
+      this.indexMap.set(lastItem.id, removeIndex);
+    }
+
+    this.items.pop();
+    this.indexMap.delete(id);
+  }
+
+  private collectSubtreeIds(rootId: Id): Set<Id> {
+    const toRemove = new Set<Id>();
+    const stack: Id[] = [rootId];
+
+    while (stack.length > 0) {
+      const currentId = stack.pop();
+      if (currentId === undefined || toRemove.has(currentId)) continue;
+
+      toRemove.add(currentId);
+      const children = this.childrenMap.get(currentId);
+      if (!children) continue;
+
+      for (const child of children) {
+        stack.push(child.id);
       }
     }
+
+    return toRemove;
   }
 
   getAll(): TreeItem[] {
-    return this.items;
+    return TreeStore.cloneItems(this.items);
   }
 
   getItem(id: Id): TreeItem | undefined {
-    return this.itemsMap.get(id);
+    const item = this.itemsMap.get(id);
+    return item ? TreeStore.cloneItem(item) : undefined;
   }
 
   getChildren(id: Id): TreeItem[] {
-    return this.childrenMap.get(id) || [];
+    const children = this.childrenMap.get(id) ?? [];
+    return TreeStore.cloneItems(children);
   }
 
   getAllChildren(id: Id): TreeItem[] {
@@ -55,12 +113,11 @@ export class TreeStore {
     const visited = new Set<Id>();
 
     while (stack.length > 0) {
-      const currentId = stack.pop()!;
+      const currentId = stack.pop();
+      if (currentId === undefined || visited.has(currentId)) continue;
 
-      if (visited.has(currentId)) continue;
       visited.add(currentId);
-
-      const children = this.childrenMap.get(currentId) || [];
+      const children = this.childrenMap.get(currentId) ?? [];
 
       for (const child of children) {
         result.push(child);
@@ -68,7 +125,7 @@ export class TreeStore {
       }
     }
 
-    return result;
+    return TreeStore.cloneItems(result);
   }
 
   getAllParents(id: Id): TreeItem[] {
@@ -80,99 +137,88 @@ export class TreeStore {
       visited.add(currentId);
       const item = this.itemsMap.get(currentId);
 
-      if (item) {
-        result.push(item);
-        currentId = this.parentMap.get(currentId) || null;
-      } else {
-        break;
-      }
+      if (!item) break;
+
+      result.push(item);
+      const parentId = this.parentMap.get(currentId);
+      currentId = parentId ?? null;
     }
 
-    return result;
+    return TreeStore.cloneItems(result);
   }
 
   addItem(item: TreeItem): void {
-    // дабавление в основной массив
-    this.items.push(item);
+    this.ensureUniqueId(item.id);
 
-    // обновление мапов
-    this.itemsMap.set(item.id, item);
-    this.parentMap.set(item.id, item.parent);
+    const nextItem = TreeStore.cloneItem(item);
+    this.items.push(nextItem);
+    this.itemsMap.set(nextItem.id, nextItem);
+    this.parentMap.set(nextItem.id, nextItem.parent);
+    this.indexMap.set(nextItem.id, this.items.length - 1);
 
-    // обновление связей родитель-ребенок
-    if (item.parent !== null) {
-      const children = this.childrenMap.get(item.parent) || [];
-      children.push(item);
-      this.childrenMap.set(item.parent, children);
+    if (nextItem.parent !== null) {
+      const children = this.childrenMap.get(nextItem.parent) ?? [];
+      children.push(nextItem);
+      this.childrenMap.set(nextItem.parent, children);
     }
   }
 
   removeItem(id: Id): void {
-    const itemToRemove = this.itemsMap.get(id)
-    if (!itemToRemove) return
+    if (!this.itemsMap.has(id)) return;
 
-    // если у удаляемого айтема есть дети - их тоже сносим
-    const childrenToRemove = this.getAllChildren(id)
-    const allIdsToRemove = new Set<Id>([id, ...childrenToRemove.map((c) => c.id)])
+    const allIdsToRemove = this.collectSubtreeIds(id);
 
-    // обновление основного массива - исключаем удаленный айтем
-    this.items = this.items.filter((item) => !allIdsToRemove.has(item.id))
+    for (const removeId of allIdsToRemove) {
+      const parentId = this.parentMap.get(removeId);
+      if (parentId === null || parentId === undefined) continue;
 
-    // удаляем айтем из мапов
-    allIdsToRemove.forEach((itemId) => {
-      this.itemsMap.delete(itemId)
-      this.childrenMap.delete(itemId)
-      this.parentMap.delete(itemId)
-    })
+      const parentChildren = this.childrenMap.get(parentId);
+      if (!parentChildren) continue;
 
-    // если удаляемый айтем был ребенком, то чистим ссылки на него у родителей
-    for (const [parentId, children] of this.childrenMap.entries()) {
-      const filteredChildren = children.filter((child) => !allIdsToRemove.has(child.id))
-      if (filteredChildren.length > 0) {
-        this.childrenMap.set(parentId, filteredChildren)
+      const nextChildren = parentChildren.filter((child) => child.id !== removeId);
+      if (nextChildren.length === 0) {
+        this.childrenMap.delete(parentId);
       } else {
-        this.childrenMap.delete(parentId)
+        this.childrenMap.set(parentId, nextChildren);
       }
+    }
+
+    for (const removeId of allIdsToRemove) {
+      this.childrenMap.delete(removeId);
+      this.parentMap.delete(removeId);
+      this.itemsMap.delete(removeId);
+      this.removeFromItemsById(removeId);
     }
   }
 
   updateItem(updatedItem: TreeItem): void {
-    const existingItem = this.itemsMap.get(updatedItem.id);
-    if (!existingItem) return;
+    const currentIndex = this.indexMap.get(updatedItem.id);
+    if (currentIndex === undefined) return;
 
+    const existingItem = this.items[currentIndex];
+    if (!existingItem) return;
     const oldParent = existingItem.parent;
 
-    Object.assign(existingItem, updatedItem);
+    Object.assign(existingItem, TreeStore.cloneItem(updatedItem));
+    this.parentMap.set(existingItem.id, existingItem.parent);
 
-    // обновляем мапы
-    this.itemsMap.set(updatedItem.id, existingItem);
-    this.parentMap.set(updatedItem.id, updatedItem.parent);
+    if (oldParent === existingItem.parent) return;
 
-    // если изменился parent -> обновляем childrenMap
-    if (oldParent !== updatedItem.parent) {
-      // удаляем ссылку на ребенка из старого родителя
-      if (oldParent !== null) {
-        const oldParentChildren = this.childrenMap.get(oldParent) || [];
-        const filteredChildren = oldParentChildren.filter(c => c.id !== updatedItem.id);
-        if (filteredChildren.length > 0) {
-          this.childrenMap.set(oldParent, filteredChildren);
-        } else {
-          this.childrenMap.delete(oldParent);
-        }
-      }
+    if (oldParent !== null) {
+      const oldParentChildren = this.childrenMap.get(oldParent) ?? [];
+      const nextChildren = oldParentChildren.filter((item) => item.id !== existingItem.id);
 
-      // добавляем к новому родителю
-      if (updatedItem.parent !== null) {
-        const newParentChildren = this.childrenMap.get(updatedItem.parent) || [];
-        newParentChildren.push(existingItem);
-        this.childrenMap.set(updatedItem.parent, newParentChildren);
+      if (nextChildren.length === 0) {
+        this.childrenMap.delete(oldParent);
+      } else {
+        this.childrenMap.set(oldParent, nextChildren);
       }
     }
 
-    // обновляем элемент в основном массиве
-    const index = this.items.findIndex(item => item.id === updatedItem.id);
-    if (index !== -1) {
-      this.items[index] = existingItem;
+    if (existingItem.parent !== null) {
+      const newParentChildren = this.childrenMap.get(existingItem.parent) ?? [];
+      newParentChildren.push(existingItem);
+      this.childrenMap.set(existingItem.parent, newParentChildren);
     }
   }
 }
